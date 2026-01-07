@@ -3,4 +3,3 @@ kind: Kustomization
 resources:
   - apisix/application.yaml
   - apisix/openfga-authz.yaml
-  - openfga/application.yaml
