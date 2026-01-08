@@ -1,0 +1,47 @@
+apisix:
+  deployment:
+    role: "traditional"
+    role_traditional:
+      config_provider: "yaml"
+  customPlugins:
+    enabled: true
+    luaPath: /opts/custom_plugins/?.lua
+    plugins:
+    - configMap:
+        mounts:
+        - key: openfga_authz.lua
+          path: /usr/local/apisix/apisix/plugins/openfga_authz.lua
+        name: openfga-authz
+      name: openfga_authz
+  enableServerTokens: false
+  pluginAttrs:
+    prometheus:
+      enable_export_server: false
+  plugins:
+  - openid-connect
+  - cors
+  - openfga_authz
+  - prometheus
+  - redirect
+  - proxy-rewrite
+  - request-id
+etcd:
+  enabled: false
+gateway:
+  annotations:
+    cloud.google.com/neg: '{"exposed_ports": {"80":{}}}'
+  enabled: true
+ingress-controller:
+  enabled: true
+  apisix:
+    adminService:
+      namespace: apisix
+  gatewayProxy:
+    createDefault: true
+  config:
+    provider:
+      type: "apisix-standalone"
+service:
+  annotations:
+    cloud.google.com/neg: '{"exposed_ports": {"80":{}}}'
+useDaemonSet: true

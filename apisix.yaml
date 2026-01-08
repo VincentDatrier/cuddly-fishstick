@@ -1,16 +1,18 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: sealed-secrets
+  name: apisix
   namespace: argocd
 spec:
   project: default
   source:
-    chart: sealed-secrets
-    repoURL: https://bitnami-labs.github.io/sealed-secrets
-    targetRevision: 1.16.1
+    chart: apisix
+    repoURL: https://apache.github.io/apisix-helm-chart
+    targetRevision: 2.12.5
     helm:
-      releaseName: sealed-secrets
+      releaseName: apisix
+      valueFiles:
+        - apisix-values.yaml
   destination:
     server: "https://kubernetes.default.svc"
-    namespace: kubeseal
+    namespace: apisix
