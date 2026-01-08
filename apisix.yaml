@@ -5,14 +5,14 @@ metadata:
   namespace: argocd
 spec:
   project: default
-  source:
-    chart: apisix
-    repoURL: https://apache.github.io/apisix-helm-chart
-    targetRevision: 2.12.5
-    helm:
-      releaseName: apisix
-      valueFiles:
-        - apisix-values.yaml
-  destination:
-    server: "https://kubernetes.default.svc"
-    namespace: apisix
+  sources:
+    - chart: apisix
+      repoURL: https://apache.github.io/apisix-helm-chart
+      targetRevision: 2.12.5
+      helm:
+        releaseName: apisix
+        valueFiles:
+          - $values/apisix-values.yaml
+    - repoURL: 'https://github.com/VincentDatrier/cuddly-fishstick.git'
+        targetRevision: main
+        ref: values
