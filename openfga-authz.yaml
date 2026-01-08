@@ -1,0 +1,103 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openfga-authz
+  namespace: apisix
+data:
+  openfga_authz.lua: "local core = require(\"apisix.core\")\nlocal http = require(\"resty.http\")\nlocal
+    json = require(\"cjson\")\nlocal base64 = require(\"base64\")\n\nlocal plugin_name
+    = \"openfga_authz\"\n\n-- Create a shared dictionary to store dynamic configuration\nlocal
+    config_dict = ngx.shared.openfga_config\n\nlocal function update_dynamic_config(key,
+    value)\n    local ok, err = config_dict:set(key, json.encode(value))\n    if not
+    ok then\n        core.log.error(\"Failed to update dynamic config: \", err)\n
+    \   end\nend\n\nlocal function get_dynamic_config(key)\n    local value, err =
+    config_dict:get(key)\n    if not value then\n        return nil\n    end\n    return
+    json.decode(value)\nend\n\n-- Enhanced schema to allow custom mapping and dynamic
+    configuration\nlocal schema = {\n    type = \"object\",\n    properties = {\n
+    \       openfga_url = { type = \"string\" },\n        store_id = { type = \"string\"
+    },\n        authorization_model_id = { type = \"string\" },\n        resource_mappings
+    = {\n            type = \"array\",\n            items = {\n                type
+    = \"object\",\n                properties = {\n                    uri_pattern
+    = { type = \"string\" },\n                    resource_type = { type = \"string\"
+    },\n                    id_location = {\n                        type = \"string\",\n
+    \                       enum = { \"last_part\", \"query_param\", \"header\", \"capture_group\",
+    \"static\" }\n                    },\n                    id_key = { type = \"string\"
+    },\n                    id_capture_group = { type = \"integer\" },\n                    id_static_value
+    = { type = \"string\" }\n                },\n                required = { \"uri_pattern\",
+    \"resource_type\", \"id_location\" },\n            },\n        },\n        relation_mappings
+    = {\n            type = \"object\",\n            patternProperties = {\n                [\"^[A-Z]+$\"]
+    = { type = \"string\" }\n            },\n        },\n        use_dynamic_config
+    = { type = \"boolean\", default = false },\n    },\n    required = { \"openfga_url\",
+    \"store_id\", \"authorization_model_id\", \"resource_mappings\" },\n}\n\nlocal
+    _M = {\n    version = 0.1,\n    priority = 2500,\n    name = plugin_name,\n    schema
+    = schema,\n}\n\nfunction _M.check_schema(conf)\n    return core.schema.check(schema,
+    conf)\nend\n\nlocal lrucache = core.lrucache.new({\n    ttl = 300,\n    count
+    = 10000,\n})\n\nfunction _M.get_resource_info(uri, method, conf, ctx)\n    for
+    _, mapping in ipairs(conf.resource_mappings) do\n        local m, err = ngx.re.match(uri,
+    mapping.uri_pattern, \"jo\")\n        if err then\n            core.log.error(\"Failed
+    to match URI: \", err)\n            return nil, nil\n        end\n        \n        if
+    m then\n            local resource_id\n            if mapping.id_location == \"last_part\"
+    then\n                resource_id = uri:match(\"/([^/]+)$\")\n            elseif
+    mapping.id_location == \"query_param\" then\n                resource_id = core.request.get_uri_args(ctx)[mapping.id_key]
+    \ \n            elseif mapping.id_location == \"header\" then\n                resource_id
+    = core.request.header(ctx, mapping.id_key)\n            elseif mapping.id_location
+    == \"capture_group\" then\n                resource_id = m[mapping.id_capture_group]\n
+    \           elseif mapping.id_location == \"static\" then\n                resource_id
+    = mapping.id_static_value\n            end\n\n            return mapping.resource_type,
+    resource_id\n        end\n    end\n    return nil, nil\nend\n\nfunction _M.get_relation(method,
+    resource_type, conf, ctx)\n    local relation\n\n    -- Check for custom header
+    override\n    local custom_relation = core.request.header(ctx, \"X-Custom-Relation\")\n
+    \   if custom_relation then\n        return custom_relation\n    end\n\n    --
+    Use dynamic configuration if enabled\n    if conf.use_dynamic_config then\n        local
+    dynamic_mappings = get_dynamic_config(\"relation_mappings\")\n        if dynamic_mappings
+    then\n            relation = dynamic_mappings[method]\n        end\n    end\n\n
+    \   -- Fall back to static configuration if dynamic is not set\n    if not relation
+    then\n        relation = conf.relation_mappings and conf.relation_mappings[method]\n
+    \   end\n\n    -- Default to \"can_access\" if no mapping found\n    return relation
+    or \"can_access\"\nend\n\nlocal function base64_decode(input)\n    local decoded_data
+    = base64.decode(input)\n    if not decoded_data then\n        core.log.error(\"Failed
+    to decode base64 data\")\n    end\n    return decoded_data\nend\n\nlocal function
+    extract_sub_from_userinfo(userinfo_header)\n    -- Decode the Base64 encoded \"X-Userinfo\"
+    header\n    local decoded_userinfo = base64_decode(userinfo_header)\n    if not
+    decoded_userinfo then\n        return nil, \"Failed to decode X-Userinfo header\"\n
+    \   end\n\n    -- Parse the JSON from the decoded \"X-Userinfo\" header\n    local
+    userinfo, err = core.json.decode(decoded_userinfo)\n    if err then\n        return
+    nil, \"Failed to decode JSON from X-Userinfo header: \" .. err\n    end\n\n    --
+    Extract the \"sub\" value from the parsed userinfo\n    local sub_value = userinfo.sub\n
+    \   if not sub_value then\n        return nil, \"sub field is missing in X-Userinfo
+    header\"\n    end\n\n    return sub_value\nend\n\nfunction _M.access(conf, ctx)\n
+    \   local user_id = extract_sub_from_userinfo(core.request.header(ctx, \"X-Userinfo\"))\n
+    \   local uri = ctx.var.uri\n    local method = ctx.var.request_method\n\n    if
+    not user_id then\n        core.log.error(\"User ID not provided\")\n        return
+    401, { message = \"User ID not provided\" }\n    end\n\n    local resource_type,
+    resource_id = _M.get_resource_info(uri, method, conf, ctx)\n    local relation
+    = _M.get_relation(method, resource_type, conf, ctx)\n\n    if not resource_type
+    or not resource_id then\n        core.log.error(\"Unable to determine resource
+    type or ID\")\n        return 500, { message = \"Internal server error\" }\n    end\n\n
+    \   local cache_key = user_id .. \":\" .. resource_type .. \":\" .. resource_id
+    .. \":\" .. relation\n\n    local allowed, err = lrucache(cache_key, nil, function()\n
+    \       local client = http.new()\n        client:set_timeout(5000)\n\n        local
+    res, err = client:request_uri(conf.openfga_url .. \"/stores/\" .. conf.store_id
+    .. \"/check\", {\n            method = \"POST\",\n            headers = {\n                [\"Content-Type\"]
+    = \"application/json\",\n            },\n            body = json.encode({\n                tuple_key
+    = {\n                    user = \"user:\" .. user_id,\n                    relation
+    = relation,\n                    object = resource_type .. \":\" .. resource_id,\n
+    \               },\n                authorization_model_id = conf.authorization_model_id,\n
+    \           }),\n        })\n\n        if not res then\n            core.log.error(\"Failed
+    to request OpenFGA: \", err)\n            return nil, \"Failed to request OpenFGA\"\n
+    \       end\n\n        if res.status ~= 200 then\n            core.log.error(\"OpenFGA
+    returned non-200 status: \", res.status)\n            return nil, \"OpenFGA returned
+    non-200 status\"\n        end\n\n        local body = json.decode(res.body)\n
+    \       return body.allowed\n    end)\n\n    if err then\n        core.log.error(\"Authorization
+    check failed: \", err)\n        return 500, { message = \"Internal server error\"
+    }\n    end\n\n    if not allowed then\n        core.log.info(\"Access denied for
+    user \", user_id, \" to \", resource_type, \":\", resource_id, \" with relation
+    \",\n            relation)\n        return 403, { message = \"Access denied\"
+    }\n    end\n\n    core.log.info(\"Access granted for user \", user_id, \" to \",
+    resource_type, \":\", resource_id, \" with relation \",\n        relation)\nend\n\n--
+    Add an API to update dynamic configuration\nfunction _M.api()\n    return {\n
+    \       {\n            methods = { \"POST\" },\n            uri = \"/apisix/plugin/openfga_authz/config\",\n
+    \           handler = function(conf, ctx)\n                local req_body = core.request.get_body()\n
+    \               local config = json.decode(req_body)\n                update_dynamic_config(\"relation_mappings\",
+    config.relation_mappings)\n                return 200, { message = \"Configuration
+    updated successfully\" }\n            end\n        }\n    }\nend\n\nreturn _M\n"
