@@ -13,6 +13,9 @@ spec:
         releaseName: apisix
         valueFiles:
           - $values/apisix-values.yaml
-    - repoURL: 'https://github.com/VincentDatrier/cuddly-fishstick.git'
-        targetRevision: main
-        ref: values
+    - repoURL: "https://github.com/VincentDatrier/cuddly-fishstick.git"
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: apisix
